@@ -728,61 +728,107 @@ class InstallerGUI:
         """Instala las dependencias de Python"""
         try:
             requirements_file = os.path.join(install_path, 'requirements.txt')
-            if os.path.exists(requirements_file):
-                import subprocess
+            if not os.path.exists(requirements_file):
+                self.log_message("⚠ No se encontró requirements.txt")
+                return
 
-                # Usar comando 'python' del sistema
-                python_cmd = 'python'
+            import subprocess
 
-                self.log_message("Instalando dependencias de Python...")
-                self.root.update()  # Forzar actualización de UI
+            # Usar comando 'python' del sistema
+            python_cmd = 'python'
 
-                # Intentar instalar usando Popen para no bloquear UI
+            self.log_message("")
+            self.log_message("=" * 50)
+            self.log_message("INSTALANDO DEPENDENCIAS DE PYTHON")
+            self.log_message("=" * 50)
+            self.log_message("")
+            self.log_message(f"Python: {python_cmd}")
+            self.log_message(f"Requirements: {requirements_file}")
+            self.log_message("")
+            self.root.update()
+
+            # Intentar instalar - SIN -q para ver progreso
+            try:
+                creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+
+                self.log_message("Ejecutando: python -m pip install -r requirements.txt")
+                self.log_message("(Esto puede tardar 2-3 minutos...)")
+                self.log_message("")
+                self.root.update()
+
+                process = subprocess.Popen(
+                    [python_cmd, '-m', 'pip', 'install', '-r', requirements_file],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Combinar stderr con stdout
+                    text=True,
+                    creationflags=creationflags
+                )
+
+                # Mostrar output en tiempo real
+                for line in iter(process.stdout.readline, ''):
+                    if line.strip():
+                        self.log_message(line.strip())
+                        self.root.update()
+
+                # Esperar a que termine (timeout 3 minutos)
                 try:
-                    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-                    process = subprocess.Popen(
-                        [python_cmd, '-m', 'pip', 'install', '-q', '-r', requirements_file],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        creationflags=creationflags
-                    )
-
-                    # Esperar hasta 60 segundos
-                    stdout, stderr = process.communicate(timeout=60)
-
-                    if process.returncode == 0:
-                        self.log_message("✓ Dependencias instaladas correctamente.")
-                    else:
-                        self.log_message(f"⚠ Advertencia al instalar dependencias")
-                        if stderr:
-                            self.log_message(f"   {stderr[:200]}")  # Primeros 200 chars del error
-
-                        # Fallback: intentar buscar python explícitamente
-                        python_exe = self._find_python_executable()
-                        if python_exe and python_exe != python_cmd:
-                            self.log_message(f"Reintentando con: {python_exe}")
-                            process2 = subprocess.Popen(
-                                [python_exe, '-m', 'pip', 'install', '-q', '-r', requirements_file],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True,
-                                creationflags=creationflags
-                            )
-                            process2.communicate(timeout=60)
-                            if process2.returncode == 0:
-                                self.log_message("✓ Dependencias instaladas (segundo intento).")
-
+                    process.wait(timeout=180)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    self.log_message("⚠ Instalación de dependencias tomó demasiado tiempo (timeout)")
-                    self.log_message("   Puedes instalarlas manualmente ejecutando: install_dependencies.bat")
+                    self.log_message("")
+                    self.log_message("⚠ TIMEOUT: Instalación tardó más de 3 minutos")
+                    self.log_message("   Ejecuta install_dependencies.bat manualmente")
+                    return
 
-        except FileNotFoundError:
-            self.log_message("⚠ Python no encontrado en PATH. Instala Python desde python.org")
+                self.log_message("")
+                if process.returncode == 0:
+                    self.log_message("=" * 50)
+                    self.log_message("✅ DEPENDENCIAS INSTALADAS CORRECTAMENTE")
+                    self.log_message("=" * 50)
+                else:
+                    self.log_message("=" * 50)
+                    self.log_message(f"⚠ ADVERTENCIA: Código de salida {process.returncode}")
+                    self.log_message("=" * 50)
+
+                    # Fallback: intentar con ruta completa de Python
+                    python_exe = self._find_python_executable()
+                    if python_exe and python_exe != python_cmd:
+                        self.log_message("")
+                        self.log_message(f"Reintentando con: {python_exe}")
+                        self.log_message("")
+
+                        process2 = subprocess.Popen(
+                            [python_exe, '-m', 'pip', 'install', '-r', requirements_file],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            creationflags=creationflags
+                        )
+
+                        for line in iter(process2.stdout.readline, ''):
+                            if line.strip():
+                                self.log_message(line.strip())
+                                self.root.update()
+
+                        process2.wait(timeout=180)
+
+                        if process2.returncode == 0:
+                            self.log_message("")
+                            self.log_message("✅ Dependencias instaladas (segundo intento)")
+
+                self.log_message("")
+
+            except FileNotFoundError:
+                self.log_message("")
+                self.log_message("❌ ERROR: Python no encontrado")
+                self.log_message("   Instala Python desde python.org")
+                self.log_message("")
+
         except Exception as e:
-            self.log_message(f"⚠ No se pudieron instalar dependencias: {str(e)[:100]}")
-            self.log_message("   Ejecuta install_dependencies.bat manualmente después.")
+            self.log_message("")
+            self.log_message(f"❌ ERROR: {str(e)}")
+            self.log_message("   Ejecuta install_dependencies.bat manualmente")
+            self.log_message("")
     
     def create_shortcut(self, location: str, install_path: str):
         """Crea un acceso directo"""
