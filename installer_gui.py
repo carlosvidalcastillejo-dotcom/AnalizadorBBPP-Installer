@@ -102,7 +102,7 @@ class InstallerGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Instalador - Analizador BBPP UiPath")
-        self.root.geometry("700x700")
+        self.root.geometry("700x800")
         self.root.resizable(True, True)
         
         # Colores del tema
