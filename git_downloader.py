@@ -173,13 +173,134 @@ class GitDownloader:
             print(f"Error descargando desde GitHub Release: {e}")
             return False
     
+    def download_from_branch_zip(self, install_path: str) -> bool:
+        """
+        Descarga el ZIP directamente desde una rama específica (sin usar API de releases)
+
+        Args:
+            install_path: Ruta donde instalar
+
+        Returns:
+            True si se descargó exitosamente
+        """
+        try:
+            self._report_progress("Descargando desde GitHub...", 10)
+
+            # Extraer owner y repo de la URL
+            repo_url = self.git_config.get('repository_url', '')
+            if 'github.com' not in repo_url:
+                return False
+
+            # Parsear URL: https://github.com/owner/repo.git
+            parts = repo_url.replace('.git', '').split('/')
+            owner = parts[-2]
+            repo = parts[-1]
+            branch = self.git_config.get('branch', 'main')
+
+            # URL directa del ZIP de la rama
+            zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+
+            self._report_progress(f"Conectando con GitHub (rama {branch})...", 20)
+
+            # Descargar el ZIP en carpeta temporal del sistema
+            temp_dir = tempfile.gettempdir()
+            zip_path = os.path.join(temp_dir, 'analizador_bbpp_download.zip')
+
+            def download_progress(block_num, block_size, total_size):
+                """Callback para progreso de descarga"""
+                if total_size > 0:
+                    downloaded = block_num * block_size
+                    percent = min(int((downloaded / total_size) * 40) + 30, 70)
+
+                    # Mostrar en KB o MB según el tamaño
+                    if total_size < 1024 * 1024:  # Menor a 1MB
+                        downloaded_kb = downloaded // 1024
+                        total_kb = total_size // 1024
+                        self._report_progress(
+                            f"Descargando... {downloaded_kb}KB / {total_kb}KB",
+                            percent
+                        )
+                    else:
+                        downloaded_mb = downloaded // 1024 // 1024
+                        total_mb = total_size // 1024 // 1024
+                        self._report_progress(
+                            f"Descargando... {downloaded_mb}MB / {total_mb}MB",
+                            percent
+                        )
+
+            urllib.request.urlretrieve(zip_url, zip_path, download_progress)
+
+            self._report_progress("Extrayendo archivos...", 75)
+
+            # Extraer el ZIP
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # GitHub crea una carpeta con el nombre repo-branch
+                temp_extract = os.path.join(temp_dir, 'analizador_bbpp_extract')
+                os.makedirs(temp_extract, exist_ok=True)
+                zip_ref.extractall(temp_extract)
+
+                # Encontrar la carpeta extraída (repo-branch)
+                extracted_folders = [f for f in os.listdir(temp_extract)
+                                    if os.path.isdir(os.path.join(temp_extract, f))]
+
+                if not extracted_folders:
+                    raise Exception("No se encontró carpeta extraída")
+
+                source_folder = os.path.join(temp_extract, extracted_folders[0])
+
+                # Mover contenidos al path de instalación
+                if os.path.exists(install_path):
+                    shutil.rmtree(install_path)
+
+                # Crear directorio padre solo si install_path tiene ruta
+                parent_dir = os.path.dirname(install_path)
+                if parent_dir and not os.path.exists(parent_dir):
+                    os.makedirs(parent_dir, exist_ok=True)
+
+                # Directorios a excluir (no necesarios en la instalación)
+                excluded_dirs = {'dist', 'build', 'installer', '__pycache__', '.git', '.github'}
+
+                # Crear directorio de instalación
+                os.makedirs(install_path, exist_ok=True)
+
+                # Copiar archivos excluyendo directorios innecesarios
+                for item in os.listdir(source_folder):
+                    if item in excluded_dirs:
+                        continue
+
+                    src = os.path.join(source_folder, item)
+                    dst = os.path.join(install_path, item)
+
+                    if os.path.exists(dst):
+                        if os.path.isdir(dst):
+                            shutil.rmtree(dst)
+                        else:
+                            os.remove(dst)
+
+                    shutil.move(src, dst)
+
+            # Limpiar archivos temporales
+            self._report_progress("Limpiando archivos temporales...", 90)
+
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+            if os.path.exists(temp_extract):
+                shutil.rmtree(temp_extract)
+
+            self._report_progress("Descarga completada", 100)
+            return True
+
+        except Exception as e:
+            print(f"Error descargando desde rama ZIP: {e}")
+            return False
+
     def download_with_git_clone(self, install_path: str) -> bool:
         """
         Clona el repositorio usando Git
-        
+
         Args:
             install_path: Ruta donde clonar
-            
+
         Returns:
             True si se clonó exitosamente
         """
@@ -187,15 +308,17 @@ class GitDownloader:
             if not self.check_git_installed():
                 self._report_progress("Git no está instalado en el sistema", 0)
                 return False
-            
+
             self._report_progress("Clonando repositorio con Git...", 20)
-            
+
             repo_url = self.git_config.get('repository_url', '')
             branch = self.git_config.get('branch', 'main')
-            
+
             # Crear directorio padre si no existe
-            os.makedirs(os.path.dirname(install_path), exist_ok=True)
-            
+            parent_dir = os.path.dirname(install_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+
             # Clonar repositorio
             cmd = [
                 'git', 'clone',
@@ -204,21 +327,21 @@ class GitDownloader:
                 repo_url,
                 install_path
             ]
-            
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=300  # 5 minutos máximo
             )
-            
+
             if result.returncode == 0:
                 self._report_progress("Repositorio clonado exitosamente", 100)
                 return True
             else:
                 print(f"Error clonando: {result.stderr}")
                 return False
-                
+
         except Exception as e:
             print(f"Error en git clone: {e}")
             return False
@@ -226,25 +349,32 @@ class GitDownloader:
     def download(self, install_path: str) -> bool:
         """
         Descarga el repositorio usando el mejor método disponible
-        
+
         Args:
             install_path: Ruta donde instalar
-            
+
         Returns:
             True si se descargó exitosamente
         """
         self._report_progress("Iniciando descarga...", 5)
-        
+
         # Intentar primero con GitHub Release (no requiere Git ni autenticación)
         if self.git_config.get('use_releases', True):
             if self.download_from_github_release(install_path):
                 return True
-        
-        # Fallback a git clone si está habilitado
+
+        # Fallback 1: Descargar ZIP directo de la rama (no requiere Git, siempre usa código actual)
+        try:
+            if self.download_from_branch_zip(install_path):
+                return True
+        except Exception as e:
+            print(f"Error con descarga directa de rama: {e}")
+
+        # Fallback 2: git clone si está habilitado (requiere Git instalado)
         if self.git_config.get('fallback_to_clone', True):
             if self.download_with_git_clone(install_path):
                 return True
-        
+
         self._report_progress("Error: No se pudo descargar el repositorio", 0)
         return False
     
