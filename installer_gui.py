@@ -699,9 +699,8 @@ class InstallerGUI:
                 return
             
             # Instalar dependencias
-            self.update_progress("Verificando dependencias de Python...", 85)
-            # Las dependencias se instalarán al ejecutar la aplicación por primera vez
-            # self.install_dependencies(install_path)
+            self.update_progress("Instalando dependencias de Python...", 85)
+            self.install_dependencies(install_path)
             
             # Crear accesos directos
             if self.create_desktop_shortcut.get():
@@ -731,11 +730,34 @@ class InstallerGUI:
             requirements_file = os.path.join(install_path, 'requirements.txt')
             if os.path.exists(requirements_file):
                 import subprocess
-                subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install', '-r', requirements_file],
-                    check=True,
-                    capture_output=True
+                import subprocess
+                # Usar comando 'python' del sistema en lugar de sys.executable
+                # sys.executable en un exe congelado apunta al propio instalador, no a python.exe
+                python_cmd = 'python'
+                
+                # Intentar instalar usando subprocess
+                process = subprocess.run(
+                    [python_cmd, '-m', 'pip', 'install', '-r', requirements_file],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
                 )
+                
+                if process.returncode != 0:
+                    self.log_message(f"Error al instalar dependencias: {process.stderr}")
+                    # Fallback: intentar buscar python explícitamente si 'python' no está en PATH
+                    python_exe = self._find_python_executable()
+                    if python_exe:
+                        self.log_message(f"Intentando de nuevo con: {python_exe}")
+                        subprocess.run(
+                            [python_exe, '-m', 'pip', 'install', '-r', requirements_file],
+                            check=False,
+                            capture_output=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+                        )
+                else:
+                    self.log_message("Dependencias instaladas correctamente.")
         except Exception as e:
             self.log_message(f"Advertencia: No se pudieron instalar todas las dependencias: {e}")
     
