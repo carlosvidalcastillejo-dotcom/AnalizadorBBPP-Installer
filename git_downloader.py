@@ -1,3 +1,7 @@
+# Copyright (c) 2025 Carlos Vidal Castillejo
+# Todos los derechos reservados.
+# Este software es propietario. Ver LICENSE para detalles.
+
 """
 Módulo para descargar y gestionar el repositorio desde Git/GitHub
 """
