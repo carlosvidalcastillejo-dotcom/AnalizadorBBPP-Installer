@@ -686,46 +686,125 @@ class InstallerGUI:
         thread.start()
     
     def run_installation(self):
-        """Ejecuta el proceso de instalación"""
+        """Ejecuta el proceso de instalación con logs mejorados"""
         try:
             install_path = self.install_path.get()
-            
-            # Crear downloader
-            downloader = GitDownloader(self.config, self.update_progress)
-            
-            # Descargar repositorio
-            if not downloader.download(install_path):
+
+            # === PASO 0: Verificar Python ===
+            self.log_message("\n" + "=" * 60)
+            self.log_message("VERIFICANDO ENTORNO")
+            self.log_message("=" * 60)
+
+            python_exe = self._find_python_executable()
+            if not python_exe:
                 messagebox.showerror(
                     "Error",
-                    "No se pudo descargar el repositorio. Verifica tu conexión a internet."
+                    "No se encontró Python en el sistema.\n"
+                    "Por favor instala Python 3.8 o superior desde python.org"
                 )
                 self.show_page(1)
                 return
-            
-            # Instalar dependencias
+
+            python_version = self.get_python_version()
+            pythonw_exe, needs_vbs = self._find_pythonw_executable()
+
+            self.log_message(f"✓ Python encontrado: {python_exe}")
+            self.log_message(f"  Versión: {python_version}")
+            self.log_message(f"  pythonw.exe: {'Sí' if not needs_vbs else 'No (se usará wrapper .vbs)'}")
+            self.log_message(f"✓ Ubicación de instalación: {install_path}")
+
+            # === PASO 1: Descargar repositorio (0-85%) ===
+            self.log_message("\n" + "=" * 60)
+            self.log_message("DESCARGANDO APLICACIÓN")
+            self.log_message("=" * 60)
+
+            downloader = GitDownloader(self.config, self.update_progress)
+
+            if not downloader.download(install_path):
+                messagebox.showerror(
+                    "Error",
+                    "No se pudo descargar el repositorio.\nVerifica tu conexión a internet."
+                )
+                self.show_page(1)
+                return
+
+            # === PASO 2: Verificar/crear launcher (85%) ===
+            self.update_progress("Configurando launcher...", 85)
+            self.log_message("\n" + "=" * 60)
+            self.log_message("CONFIGURANDO LAUNCHER")
+            self.log_message("=" * 60)
+
+            if not self.create_pyw_launcher(install_path):
+                self.log_message("⚠ Warning: No se pudo verificar/crear launcher")
+
+            # === PASO 3: Instalar dependencias (85-88%) ===
             self.update_progress("Instalando dependencias de Python...", 85)
+            self.log_message("\n" + "=" * 60)
+            self.log_message("INSTALANDO DEPENDENCIAS")
+            self.log_message("=" * 60)
+
             self.install_dependencies(install_path)
-            
-            # Crear accesos directos
+
+            # === PASO 4: Verificar dependencias (88-90%) ===
+            self.update_progress("Verificando instalación...", 88)
+            deps_ok, missing = self.verify_installed_dependencies(install_path)
+
+            if not deps_ok and missing:
+                self.log_message(f"\n⚠ ADVERTENCIA: Algunas dependencias no se instalaron:")
+                for dep in missing:
+                    self.log_message(f"  - {dep}")
+                self.log_message("\nLa aplicación puede no funcionar correctamente.")
+
+            # === PASO 5: Crear accesos directos (90-96%) ===
+            self.log_message("\n" + "=" * 60)
+            self.log_message("CREANDO ACCESOS DIRECTOS")
+            self.log_message("=" * 60)
+
+            shortcuts_created = []
+
             if self.create_desktop_shortcut.get():
                 self.update_progress("Creando acceso directo en escritorio...", 92)
-                self.create_shortcut('desktop', install_path)
-            
+                if self.create_shortcut('desktop', install_path):
+                    shortcuts_created.append("Escritorio")
+
             if self.create_start_menu_shortcut.get():
                 self.update_progress("Creando acceso directo en menú Inicio...", 95)
-                self.create_shortcut('start_menu', install_path)
-            
-            # Guardar configuración
-            self.update_progress("Guardando configuración...", 98)
+                if self.create_shortcut('start_menu', install_path):
+                    shortcuts_created.append("Menú Inicio")
+
+            # === PASO 6: Guardar configuración (96-98%) ===
+            self.update_progress("Guardando configuración...", 96)
             self.save_installation_config(install_path)
-            
+
+            # === RESUMEN FINAL ===
             self.update_progress("¡Instalación completada!", 100)
-            
+            self.log_message("\n" + "=" * 60)
+            self.log_message("INSTALACIÓN COMPLETADA EXITOSAMENTE")
+            self.log_message("=" * 60)
+            self.log_message(f"\nUbicación: {install_path}")
+            self.log_message(f"Launcher: AnalizadorBBPP.pyw")
+
+            if shortcuts_created:
+                self.log_message(f"\nAccesos directos creados:")
+                for location in shortcuts_created:
+                    self.log_message(f"  ✓ {location}")
+            else:
+                self.log_message("\nNo se crearon accesos directos")
+
+            self.log_message(f"\nPuedes ejecutar la aplicación desde:")
+            if shortcuts_created:
+                self.log_message(f"  - Los accesos directos creados")
+            self.log_message(f"  - Doble clic en: {install_path}\\AnalizadorBBPP.pyw")
+            self.log_message(f"  - Línea de comandos: pythonw AnalizadorBBPP.pyw")
+
+            self.log_message("\n" + "=" * 60)
+
             # Mostrar página de finalización
             self.root.after(1000, lambda: self.show_page(3))
-            
+
         except Exception as e:
             messagebox.showerror("Error", f"Error durante la instalación:\n{str(e)}")
+            self.log_message(f"\n❌ ERROR FATAL: {str(e)}")
             self.show_page(1)
     
     def install_dependencies(self, install_path: str):
@@ -835,54 +914,72 @@ class InstallerGUI:
             self.log_message("")
     
     def create_shortcut(self, location: str, install_path: str):
-        """Crea un acceso directo"""
+        """Crea un acceso directo para ejecutar la aplicación sin consola"""
         try:
             import win32com.client
-            
+
             shell = win32com.client.Dispatch("WScript.Shell")
-            
+
+            # Determinar ruta del shortcut
             if location == 'desktop':
                 shortcut_path = os.path.join(
                     shell.SpecialFolders("Desktop"),
                     "Analizador BBPP UiPath.lnk"
                 )
+                location_name = "escritorio"
             else:  # start_menu
                 shortcut_path = os.path.join(
                     shell.SpecialFolders("StartMenu"),
                     "Programs",
                     "Analizador BBPP UiPath.lnk"
                 )
-            
+                location_name = "menú Inicio"
+
+            self.log_message(f"\nCreando acceso directo en {location_name}...")
+            self.log_message(f"  Ubicación: {shortcut_path}")
+
+            # Verificar si existe .pyw launcher
+            pyw_path = os.path.join(install_path, 'AnalizadorBBPP.pyw')
+            if not os.path.exists(pyw_path):
+                self.log_message(f"  ✗ No se encontró launcher: {pyw_path}")
+                return False
+
+            # Obtener pythonw.exe o fallback
+            pythonw_exe, needs_vbs = self._find_pythonw_executable()
+            if not pythonw_exe:
+                self.log_message("  ✗ No se encontró Python en el sistema")
+                return False
+
             shortcut = shell.CreateShortCut(shortcut_path)
+            shortcut.WorkingDirectory = install_path
 
-            # Preferir .exe si existe, sino usar Python con main.py
-            exe_path = os.path.join(install_path, 'dist', 'AnalizadorBBPP_UiPath.exe')
-            main_py = os.path.join(install_path, 'src', 'main.py')
+            if needs_vbs:
+                # Usar wrapper .vbs para ocultar consola
+                vbs_path = self.create_vbs_wrapper(install_path, pythonw_exe)
+                if not vbs_path:
+                    self.log_message("  ✗ No se pudo crear wrapper .vbs")
+                    return False
 
-            if os.path.exists(exe_path):
-                # Usar el ejecutable compilado
-                shortcut.TargetPath = exe_path
-                shortcut.WorkingDirectory = install_path
-                shortcut.IconLocation = exe_path
-            elif os.path.exists(main_py):
-                # Fallback a Python si no hay .exe
-                python_exe = self._find_python_executable()
-                if not python_exe:
-                    self.log_message("No se encontró Python en el sistema")
-                    return
-
-                shortcut.TargetPath = python_exe
-                shortcut.Arguments = f'"{main_py}"'
-                shortcut.WorkingDirectory = install_path
-                shortcut.IconLocation = python_exe
+                shortcut.TargetPath = vbs_path
+                shortcut.IconLocation = pythonw_exe
+                self.log_message(f"  Ejecutable: {vbs_path} (wrapper)")
             else:
-                self.log_message(f"No se encontró ejecutable ni main.py en {install_path}")
-                return
+                # Usar pythonw.exe directamente
+                shortcut.TargetPath = pythonw_exe
+                shortcut.Arguments = f'"{pyw_path}"'
+                shortcut.IconLocation = pythonw_exe
+                self.log_message(f"  Ejecutable: {pythonw_exe}")
+
+            self.log_message(f"  Launcher: {pyw_path}")
+            self.log_message(f"  WorkingDir: {install_path}")
 
             shortcut.save()
-            
+            self.log_message(f"  ✓ Acceso directo creado exitosamente")
+            return True
+
         except Exception as e:
-            self.log_message(f"No se pudo crear acceso directo: {e}")
+            self.log_message(f"  ✗ Error al crear acceso directo: {e}")
+            return False
     
     def save_installation_config(self, install_path: str):
         """Guarda la configuración de la instalación"""
@@ -968,7 +1065,163 @@ class InstallerGUI:
                 return path
 
         return None
-    
+
+    def _find_pythonw_executable(self):
+        """
+        Encuentra pythonw.exe (Python sin ventana) o crea fallback
+        Returns: (executable_path, needs_vbs_wrapper)
+        """
+        python_exe = self._find_python_executable()
+        if not python_exe:
+            return None, False
+
+        # Intentar pythonw.exe en el mismo directorio que python.exe
+        pythonw_exe = python_exe.replace('python.exe', 'pythonw.exe')
+
+        if os.path.exists(pythonw_exe):
+            self.log_message(f"✓ pythonw.exe encontrado: {pythonw_exe}")
+            return pythonw_exe, False
+
+        # Fallback: crear wrapper .vbs que oculta la consola
+        self.log_message("⚠ pythonw.exe no encontrado, usando wrapper .vbs")
+        return python_exe, True
+
+    def get_python_version(self):
+        """Obtiene la versión de Python instalada"""
+        python_exe = self._find_python_executable()
+        if not python_exe:
+            return "No encontrado"
+
+        try:
+            import subprocess
+            result = subprocess.run(
+                [python_exe, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            version = result.stdout.strip() or result.stderr.strip()
+            return version.replace('Python ', '')
+        except Exception:
+            return "Desconocida"
+
+    def create_pyw_launcher(self, install_path: str):
+        """
+        Crea el archivo .pyw launcher si no existe
+        (GitHub lo descarga automáticamente, pero verificamos por seguridad)
+        """
+        pyw_path = os.path.join(install_path, 'AnalizadorBBPP.pyw')
+
+        if os.path.exists(pyw_path):
+            pyw_size = os.path.getsize(pyw_path)
+            self.log_message(f"✓ Launcher encontrado: AnalizadorBBPP.pyw ({pyw_size} bytes)")
+            return True
+
+        # Si no existe, crearlo (fallback de seguridad)
+        self.log_message("⚠ Creando launcher AnalizadorBBPP.pyw...")
+
+        pyw_content = '''#!/usr/bin/env pythonw
+# -*- coding: utf-8 -*-
+# Copyright (c) 2025 Carlos Vidal Castillejo
+# Todos los derechos reservados.
+# Este software es propietario. Ver LICENSE para detalles.
+
+"""
+Launcher sin consola para Analizador BBPP UiPath
+Este archivo se ejecuta con pythonw.exe (Python sin ventana de consola)
+"""
+
+import sys
+from pathlib import Path
+
+# Agregar directorio raíz al path para imports
+ROOT_DIR = Path(__file__).parent
+sys.path.insert(0, str(ROOT_DIR))
+
+if __name__ == "__main__":
+    # Importar y ejecutar la aplicación
+    from src.ui.main_window import MainWindow
+    app = MainWindow()
+    app.run()
+'''
+
+        try:
+            with open(pyw_path, 'w', encoding='utf-8') as f:
+                f.write(pyw_content)
+            self.log_message(f"✓ Launcher creado exitosamente")
+            return True
+        except Exception as e:
+            self.log_message(f"✗ Error al crear launcher: {e}")
+            return False
+
+    def create_vbs_wrapper(self, install_path: str, python_exe: str):
+        """
+        Crea un wrapper .vbs para ejecutar Python sin consola
+        (Solo se usa si pythonw.exe no existe)
+        """
+        vbs_path = os.path.join(install_path, 'AnalizadorBBPP_launcher.vbs')
+        pyw_path = os.path.join(install_path, 'AnalizadorBBPP.pyw')
+
+        vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """{python_exe}"" ""{pyw_path}""", 0, False
+Set WshShell = Nothing
+'''
+
+        try:
+            with open(vbs_path, 'w', encoding='utf-8') as f:
+                f.write(vbs_content)
+            self.log_message(f"✓ Wrapper .vbs creado: {vbs_path}")
+            return vbs_path
+        except Exception as e:
+            self.log_message(f"✗ Error al crear wrapper .vbs: {e}")
+            return None
+
+    def verify_installed_dependencies(self, install_path: str):
+        """
+        Verifica que las dependencias críticas se instalaron correctamente
+        Returns: (all_ok, missing_deps)
+        """
+        self.log_message("")
+        self.log_message("Verificando dependencias instaladas...")
+
+        critical_deps = ['packaging', 'openpyxl', 'PIL']
+        missing = []
+
+        python_exe = self._find_python_executable()
+        if not python_exe:
+            self.log_message("✗ No se pudo verificar (Python no encontrado)")
+            return False, critical_deps
+
+        try:
+            import subprocess
+            for dep in critical_deps:
+                try:
+                    result = subprocess.run(
+                        [python_exe, '-c', f'import {dep}'],
+                        capture_output=True,
+                        timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+                    )
+                    if result.returncode == 0:
+                        self.log_message(f"  ✓ {dep}")
+                    else:
+                        self.log_message(f"  ✗ {dep} (no instalado)")
+                        missing.append(dep)
+                except Exception:
+                    self.log_message(f"  ✗ {dep} (error al verificar)")
+                    missing.append(dep)
+
+            if not missing:
+                self.log_message("✓ Todas las dependencias críticas instaladas")
+                return True, []
+            else:
+                self.log_message(f"⚠ Faltan dependencias: {', '.join(missing)}")
+                return False, missing
+
+        except Exception as e:
+            self.log_message(f"✗ Error al verificar dependencias: {e}")
+            return False, critical_deps
+
     def finish_installation(self):
         """Finaliza el instalador"""
         self.root.quit()
